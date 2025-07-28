@@ -1,0 +1,143 @@
+sim=require'sim'
+simIK=require'simIK'
+
+function sysCall_thread()
+    modelBase=sim.getObject('..')
+    gripperHandle=sim.getObject('../vacuumGripper')
+    tip=sim.getObject('../tip')
+    target=sim.getObject('../target')
+
+    pickPositions = {
+        sim.getObject('../pickPos'),
+        sim.getObject('../pickPos1'),
+        sim.getObject('../pickPos2'),
+    }
+
+    placePositions = {
+        sim.getObject('../placePos1'), -- baza vertical? T
+        sim.getObject('../placePos2'), -- mijloc vertical T
+        sim.getObject('../placePos3'), -- bara orizontal? T
+    }
+
+    local maxTorque=50
+    
+    maxJointVel={45*math.pi/180,45*math.pi/180,45*math.pi/180,45*math.pi/180,45*math.pi/180,45*math.pi/180}
+    maxJointAccel={40*math.pi/180,40*math.pi/180,40*math.pi/180,40*math.pi/180,40*math.pi/180,40*math.pi/180}
+    maxJointJerk={80*math.pi/180,80*math.pi/180,80*math.pi/180,80*math.pi/180,80*math.pi/180,80*math.pi/180}
+
+    maxVel={0.1}
+    maxAccel={0.1}
+    maxJerk={0.5}
+    metric={1,1,1,0.1}
+
+    ikEnv=simIK.createEnvironment()
+    ikGroup=simIK.createGroup(ikEnv)
+    ikElement,simToIkMap=simIK.addElementFromScene(ikEnv,ikGroup,modelBase,tip,target,simIK.constraint_pose)
+    
+    jointHandles={}
+    ikJointHandles={}
+    for i=1,6,1 do
+        jointHandles[i]=sim.getObject('../joint'..i)
+        ikJointHandles[i]=simToIkMap[jointHandles[i]]
+        sim.setJointTargetForce(jointHandles[i],maxTorque)
+        sim.setObjectFloatParam(jointHandles[i],sim.jointfloatparam_maxvel,maxJointVel[i])
+    end
+    
+    local initConfig=getCurrentConfig()
+    
+    for i = 1, #pickPositions do
+        pickAndPlace(pickPositions[i], placePositions[i], initConfig)
+    end
+
+    moveToConfig(initConfig) -- revenire la pozi?ia ini?ial?
+end
+
+function setGripperOn(isOn)
+    if isOn then
+        sim.writeCustomStringData(gripperHandle, 'gripperOn', 'on')
+    else
+        sim.writeCustomStringData(gripperHandle, 'gripperOn', '')
+    end
+end
+
+function getCurrentConfig()
+    local conf = {}
+    for i = 1, #jointHandles do
+        conf[i] = sim.getJointPosition(jointHandles[i])
+    end
+    return conf
+end
+
+function moveToConfig(targetConf)
+    local params = {
+        joints = jointHandles,
+        targetPos = targetConf,
+        maxVel = maxJointVel,
+        maxAccel = maxJointAccel,
+        maxJerk = maxJointJerk,
+    }
+    sim.moveToConfig(params)
+end
+
+function ikMovCallback(data)
+    sim.setObjectPose(target, data.pose, modelBase)
+    simIK.handleGroup(ikEnv, ikGroup, {syncWorlds = true, allowError = true})
+end
+
+function moveToPose(targetPose)
+    local currentPose = sim.getObjectPose(tip, modelBase)
+    sim.setObjectPose(target, currentPose, modelBase)
+    local params = {
+        pose = currentPose,
+        targetPose = targetPose,
+        maxVel = maxVel,
+        maxAccel = maxAccel,
+        maxJerk = maxJerk,
+        callback = ikMovCallback,
+        metric = metric,
+    }
+    sim.moveToPose(params)
+end
+
+function pickAndPlace(pickPos, placePos, initConfig)
+    local cubePose = sim.getObjectPose(pickPos, modelBase)
+
+    simIK.setObjectPose(ikEnv, simToIkMap[target], cubePose, simToIkMap[modelBase])
+    local configs = simIK.findConfigs(ikEnv, ikGroup, ikJointHandles, {
+        maxTime = 1.0,
+        findMultiple = true,
+        maxDist = 0.1,
+        cMetric = {1.0,1.0,1.0,1.0,1.0,0.1}
+    })
+    if configs and #configs > 0 then
+        moveToConfig(configs[1])
+    end
+
+    cubePose[3] = cubePose[3] + 0.04
+    moveToPose(cubePose)
+
+    cubePose[3] = cubePose[3] - 0.04
+    moveToPose(cubePose)
+    setGripperOn(true)
+    sim.wait(0.5)
+
+    cubePose[3] = cubePose[3] + 0.04
+    moveToPose(cubePose)
+
+    moveToConfig(initConfig)
+
+    local placePose = sim.getObjectPose(placePos, modelBase)
+    placePose[3] = placePose[3] + 0.04
+    moveToPose(placePose)
+
+    placePose[3] = placePose[3] - 0.04
+    moveToPose(placePose)
+    setGripperOn(false)
+    sim.wait(0.5)
+
+    placePose[3] = placePose[3] + 0.04
+    moveToPose(placePose)
+
+    moveToConfig(initConfig)
+end
+
